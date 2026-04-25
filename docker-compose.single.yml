@@ -1,0 +1,27 @@
+services:
+  # 单一服务：前端 + 后端 + Nginx
+  homepage:
+    image: homepage-single:latest  # 显式指定镜像名称
+    build:
+      context: .
+      dockerfile: Dockerfile.single
+    container_name: HomePage
+    restart: unless-stopped
+    ports:
+      - "3000:80"  # 前端端口
+      # - "3001:3001"  # 后端端口（可选，如果不需要直接访问API可以注释）
+    volumes:
+      - ./server/data:/app/data  # 数据持久化
+    environment:
+      - NODE_ENV=production
+      - CORS_ORIGIN=http://localhost:3000  # 修改为你的实际域名，如 https://your-domain.com
+    networks:
+      - homepage-network
+
+networks:
+  homepage-network:
+    driver: bridge
+
+# volumes:  # 删除未使用的命名卷
+#   homepage-data:
+#     driver: local

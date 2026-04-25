@@ -1,0 +1,131 @@
+# 合并版：前端 + 后端 + Nginx 单一镜像
+FROM node:20-alpine AS frontend-builder
+
+WORKDIR /app
+
+# 复制前端依赖并安装（只复制 package.json，不使用通配符）
+COPY package.json ./
+RUN npm install
+
+# 复制前端源码并构建
+COPY . .
+RUN npm run build
+
+# 后端构建阶段
+FROM node:20-alpine AS backend-builder
+
+WORKDIR /app
+
+# 复制后端依赖（只复制 package.json，不使用通配符）
+COPY server/package.json ./
+RUN npm install --only=production
+
+# 复制后端代码
+COPY server/index.js ./
+
+# 最终镜像 - 使用 Nginx 作为基础
+FROM nginx:alpine
+
+# 安装 Node.js 和 supervisord
+RUN apk add --no-cache nodejs npm supervisor
+
+# 创建应用目录
+WORKDIR /app
+
+# 复制后端文件
+COPY --from=backend-builder /app/node_modules ./node_modules
+COPY --from=backend-builder /app/index.js ./
+
+# 复制前端构建产物到 Nginx 目录
+COPY --from=frontend-builder /app/dist /usr/share/nginx/html
+
+# 复制 logo 到 Nginx 根目录（用于 favicon 和页面 logo）
+COPY --from=frontend-builder /app/logo.png /usr/share/nginx/html/logo.png
+
+# 创建 Nginx 配置（内联方式，不依赖外部文件）
+RUN echo 'events { worker_connections 1024; }' > /etc/nginx/nginx.conf && \
+    echo '' >> /etc/nginx/nginx.conf && \
+    echo 'http {' >> /etc/nginx/nginx.conf && \
+    echo '    include /etc/nginx/mime.types;' >> /etc/nginx/nginx.conf && \
+    echo '    default_type application/octet-stream;' >> /etc/nginx/nginx.conf && \
+    echo '' >> /etc/nginx/nginx.conf && \
+    echo '    log_format main '\''\$remote_addr - \$remote_user [\$time_local] "\$request" '\'' >> /etc/nginx/nginx.conf && \
+    echo '                    '\''\$status \$body_bytes_sent "\$http_referer" '\'' >> /etc/nginx/nginx.conf && \
+    echo '                    '\''"\$http_user_agent" "\$http_x_forwarded_for"'\'';' >> /etc/nginx/nginx.conf && \
+    echo '    access_log /var/log/nginx/access.log main;' >> /etc/nginx/nginx.conf && \
+    echo '    error_log /var/log/nginx/error.log;' >> /etc/nginx/nginx.conf && \
+    echo '' >> /etc/nginx/nginx.conf && \
+    echo '    sendfile on;' >> /etc/nginx/nginx.conf && \
+    echo '    tcp_nopush on;' >> /etc/nginx/nginx.conf && \
+    echo '    tcp_nodelay on;' >> /etc/nginx/nginx.conf && \
+    echo '    keepalive_timeout 65;' >> /etc/nginx/nginx.conf && \
+    echo '    types_hash_max_size 2048;' >> /etc/nginx/nginx.conf && \
+    echo '    client_max_body_size 10M;' >> /etc/nginx/nginx.conf && \
+    echo '' >> /etc/nginx/nginx.conf && \
+    echo '    gzip on;' >> /etc/nginx/nginx.conf && \
+    echo '    gzip_vary on;' >> /etc/nginx/nginx.conf && \
+    echo '    gzip_min_length 10240;' >> /etc/nginx/nginx.conf && \
+    echo '    gzip_types text/plain text/css text/xml text/javascript application/x-javascript application/xml+rss application/javascript application/json;' >> /etc/nginx/nginx.conf && \
+    echo '' >> /etc/nginx/nginx.conf && \
+    echo '    server {' >> /etc/nginx/nginx.conf && \
+    echo '        listen 80;' >> /etc/nginx/nginx.conf && \
+    echo '        server_name localhost;' >> /etc/nginx/nginx.conf && \
+    echo '        root /usr/share/nginx/html;' >> /etc/nginx/nginx.conf && \
+    echo '        index index.html;' >> /etc/nginx/nginx.conf && \
+    echo '' >> /etc/nginx/nginx.conf && \
+    echo '        location / {' >> /etc/nginx/nginx.conf && \
+    echo '            try_files $uri $uri/ /index.html;' >> /etc/nginx/nginx.conf && \
+    echo '        }' >> /etc/nginx/nginx.conf && \
+    echo '' >> /etc/nginx/nginx.conf && \
+    echo '        location /api/ {' >> /etc/nginx/nginx.conf && \
+    echo '            proxy_pass http://localhost:3001;' >> /etc/nginx/nginx.conf && \
+    echo '            proxy_http_version 1.1;' >> /etc/nginx/nginx.conf && \
+    echo '            proxy_set_header Upgrade $http_upgrade;' >> /etc/nginx/nginx.conf && \
+    echo '            proxy_set_header Connection '\''upgrade'\'';' >> /etc/nginx/nginx.conf && \
+    echo '            proxy_set_header Host $host;' >> /etc/nginx/nginx.conf && \
+    echo '            proxy_cache_bypass $http_upgrade;' >> /etc/nginx/nginx.conf && \
+    echo '            proxy_set_header X-Real-IP $remote_addr;' >> /etc/nginx/nginx.conf && \
+    echo '            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;' >> /etc/nginx/nginx.conf && \
+    echo '            proxy_set_header X-Forwarded-Proto $scheme;' >> /etc/nginx/nginx.conf && \
+    echo '        }' >> /etc/nginx/nginx.conf && \
+    echo '' >> /etc/nginx/nginx.conf && \
+    echo '        location /health {' >> /etc/nginx/nginx.conf && \
+    echo '            access_log off;' >> /etc/nginx/nginx.conf && \
+    echo '            return 200 "healthy\n";' >> /etc/nginx/nginx.conf && \
+    echo '            add_header Content-Type text/plain;' >> /etc/nginx/nginx.conf && \
+    echo '        }' >> /etc/nginx/nginx.conf && \
+    echo '    }' >> /etc/nginx/nginx.conf && \
+    echo '}' >> /etc/nginx/nginx.conf
+
+# 创建 supervisord 配置
+RUN echo '[supervisord]' > /etc/supervisord.conf && \
+    echo 'nodaemon=true' >> /etc/supervisord.conf && \
+    echo 'logfile=/var/log/supervisord.log' >> /etc/supervisord.conf && \
+    echo 'pidfile=/var/run/supervisord.pid' >> /etc/supervisord.conf && \
+    echo '' >> /etc/supervisord.conf && \
+    echo '[program:nginx]' >> /etc/supervisord.conf && \
+    echo 'command=nginx -g "daemon off;"' >> /etc/supervisord.conf && \
+    echo 'autostart=true' >> /etc/supervisord.conf && \
+    echo 'autorestart=true' >> /etc/supervisord.conf && \
+    echo 'stdout_logfile=/var/log/nginx.log' >> /etc/supervisord.conf && \
+    echo 'stderr_logfile=/var/log/nginx_error.log' >> /etc/supervisord.conf && \
+    echo '' >> /etc/supervisord.conf && \
+    echo '[program:backend]' >> /etc/supervisord.conf && \
+    echo 'command=node /app/index.js' >> /etc/supervisord.conf && \
+    echo 'directory=/app' >> /etc/supervisord.conf && \
+    echo 'autostart=true' >> /etc/supervisord.conf && \
+    echo 'autorestart=true' >> /etc/supervisord.conf && \
+    echo 'stdout_logfile=/var/log/backend.log' >> /etc/supervisord.conf && \
+    echo 'stderr_logfile=/var/log/backend_error.log' >> /etc/supervisord.conf && \
+    echo 'environment=NODE_ENV=production,PORT=3001' >> /etc/supervisord.conf
+
+# 创建数据目录
+RUN mkdir -p /app/data && \
+    mkdir -p /var/log && \
+    chmod -R 755 /app/data
+
+# 暴露端口（前端80，后端3001）
+EXPOSE 80 3001
+
+# 启动 supervisord 来管理 nginx 和 node.js
+CMD ["supervisord", "-c", "/etc/supervisord.conf"]
